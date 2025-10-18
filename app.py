@@ -1,6 +1,6 @@
 import os
 import requests
-from flask import Flask, request
+from flask import Flask, request, Response
 from twilio.twiml.messaging_response import MessagingResponse
 from openai import OpenAI
 from dotenv import load_dotenv
@@ -15,6 +15,7 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 TWILIO_SID = os.getenv("TWILIO_SID")
 TWILIO_AUTH = os.getenv("TWILIO_AUTH")
 
+
 # --- HAUPT-WEBHOOK ---
 @app.route("/webhook", methods=["POST"])
 def webhook():
@@ -23,7 +24,7 @@ def webhook():
         incoming_text = request.values.get("Body", "").strip()
         reply_text = ""
 
-        # 📦 Prüfen, ob Audio gesendet wurde
+        # 📦 Sprachdatei prüfen
         if num_media > 0:
             media_url = request.values.get("MediaUrl0")
             content_type = request.values.get("MediaContentType0", "")
@@ -36,18 +37,18 @@ def webhook():
                     f.write(audio_response.content)
                 print("✅ Sprachdatei erfolgreich heruntergeladen.")
             else:
-                print(f"❌ Fehler beim Herunterladen der Datei: {audio_response.status_code}")
+                print(f"❌ Fehler beim Herunterladen: {audio_response.status_code}")
                 resp = MessagingResponse()
                 resp.message("Fehler beim Abrufen der Sprachnachricht 😕")
-                return str(resp)
+                return Response(str(resp), mimetype="application/xml")
 
-            # 🔊 In WAV umwandeln (Whisper versteht .wav am besten)
+            # 🔊 Umwandeln in WAV
             conversion_result = os.system('ffmpeg -y -i voice.ogg -ar 44100 -ac 2 voice.wav')
             if conversion_result != 0 or not os.path.exists("voice.wav"):
                 print("❌ Fehler bei der ffmpeg-Konvertierung.")
                 resp = MessagingResponse()
                 resp.message("Die Sprachnachricht konnte nicht verarbeitet werden 🎧.")
-                return str(resp)
+                return Response(str(resp), mimetype="application/xml")
 
             # 🧠 Whisper → Text
             with open("voice.wav", "rb") as audio_file:
@@ -63,7 +64,7 @@ def webhook():
                 if os.path.exists(file):
                     os.remove(file)
 
-        # Wenn kein Text erkannt wurde
+        # 🧩 Wenn kein Text erkannt wurde
         if not incoming_text:
             reply_text = "Ich konnte nichts verstehen 🎧 – bitte sprich oder schreib noch einmal."
         else:
@@ -74,18 +75,20 @@ def webhook():
             )
             reply_text = response.choices[0].message.content.strip()
 
-        # 📲 Antwort senden
+        # 📲 Twilio-Antwort senden (wichtig für WhatsApp!)
         resp = MessagingResponse()
         resp.message(reply_text)
-        return str(resp)
+        return Response(str(resp), mimetype="application/xml")
 
     except Exception as e:
-        print("💥 Allgemeiner Fehler:", e)
+        print("💥 Allgemeiner Fehler im Webhook:", e)
         resp = MessagingResponse()
         resp.message("🚨 Unerwarteter Serverfehler. Bitte versuch es später erneut.")
-        return str(resp)
+        return Response(str(resp), mimetype="application/xml")
 
-# --- START ---
+
+# --- SERVER STARTEN (lokal & Render) ---
 if __name__ == "__main__":
-    print("🚀 Butler läuft auf Port 5000 ...")
-    app.run(host="0.0.0.0", port=5000)
+    port = int(os.environ.get("PORT", 5000))
+    print(f"🚀 Butler läuft auf Port {port} und wartet auf WhatsApp-Nachrichten ...")
+    app.run(host="0.0.0.0", port=port)
