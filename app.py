@@ -1,5 +1,7 @@
 import os
+import threading
 import requests
+import subprocess
 from flask import Flask, request, Response
 from twilio.twiml.messaging_response import MessagingResponse
 from openai import OpenAI
@@ -15,80 +17,102 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 TWILIO_SID = os.getenv("TWILIO_SID")
 TWILIO_AUTH = os.getenv("TWILIO_AUTH")
 
+# --- BACKGROUND VERARBEITUNG DER SPRACHNACHRICHT ---
+def process_audio(media_url, from_number, to_number):
+    try:
+        # 🔊 Sprachdatei laden
+        audio_response = requests.get(media_url, auth=(TWILIO_SID, TWILIO_AUTH))
+        with open("voice.ogg", "wb") as f:
+            f.write(audio_response.content)
+
+        # 🎧 In WAV konvertieren (Mono + 16kHz = perfekt für Whisper)
+        subprocess.run(
+            ['ffmpeg', '-y', '-i', 'voice.ogg', '-ar', '16000', '-ac', '1', '-b:a', '32k', 'voice.wav'],
+            timeout=120, check=True
+        )
+
+        # 🧠 OpenAI Whisper → Text
+        with open("voice.wav", "rb") as audio_file:
+            transcription = client.audio.transcriptions.create(
+                model="whisper-1",
+                file=audio_file
+            )
+        text = transcription.text
+        print("🗣️ Transkribierter Text:", text)
+
+        # 💬 GPT antwortet auf das Transkript
+        gpt_response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": text}]
+        )
+        reply_text = gpt_response.choices[0].message.content.strip()
+
+        # 📨 Nachricht über Twilio REST API zurücksenden
+        requests.post(
+            f"https://api.twilio.com/2010-04-01/Accounts/{TWILIO_SID}/Messages.json",
+            auth=(TWILIO_SID, TWILIO_AUTH),
+            data={
+                "From": to_number,  # 🔥 automatisch Twilio-Nummer
+                "To": from_number,  # Nutzer, der die Sprachnachricht gesendet hat
+                "Body": reply_text
+            }
+        )
+        print("✅ Antwort gesendet an:", from_number)
+
+        # 🧹 Aufräumen
+        for f in ["voice.ogg", "voice.wav"]:
+            if os.path.exists(f):
+                os.remove(f)
+
+    except Exception as e:
+        print("❌ Fehler in Background-Verarbeitung:", e)
+
 
 # --- HAUPT-WEBHOOK ---
 @app.route("/webhook", methods=["POST"])
 def webhook():
     try:
+        from_number = request.values.get("From", "")
+        to_number = request.values.get("To", "")
         num_media = int(request.values.get("NumMedia", 0))
         incoming_text = request.values.get("Body", "").strip()
-        reply_text = ""
 
-        # 📦 Sprachdatei prüfen
         if num_media > 0:
             media_url = request.values.get("MediaUrl0")
-            content_type = request.values.get("MediaContentType0", "")
-            print(f"🎙️ Sprachdatei empfangen: {media_url} ({content_type})")
+            print(f"🎙️ Sprachdatei empfangen von {from_number} an {to_number}: {media_url}")
 
-            # Sprachdatei mit Twilio-Auth herunterladen
-            audio_response = requests.get(media_url, auth=(TWILIO_SID, TWILIO_AUTH))
-            if audio_response.status_code == 200:
-                with open("voice.ogg", "wb") as f:
-                    f.write(audio_response.content)
-                print("✅ Sprachdatei erfolgreich heruntergeladen.")
-            else:
-                print(f"❌ Fehler beim Herunterladen: {audio_response.status_code}")
-                resp = MessagingResponse()
-                resp.message("Fehler beim Abrufen der Sprachnachricht 😕")
-                return Response(str(resp), mimetype="application/xml")
+            # Sofortige Zwischenantwort, damit Twilio nicht abbricht
+            resp = MessagingResponse()
+            resp.message("Ich transkribiere deine Sprachnachricht 🎧... Einen Moment bitte ⏳")
 
-            # 🔊 Umwandeln in WAV
-            conversion_result = os.system('ffmpeg -y -i voice.ogg -ar 44100 -ac 2 voice.wav')
-            if conversion_result != 0 or not os.path.exists("voice.wav"):
-                print("❌ Fehler bei der ffmpeg-Konvertierung.")
-                resp = MessagingResponse()
-                resp.message("Die Sprachnachricht konnte nicht verarbeitet werden 🎧.")
-                return Response(str(resp), mimetype="application/xml")
+            # Hintergrund-Thread starten
+            threading.Thread(target=process_audio, args=(media_url, from_number, to_number)).start()
 
-            # 🧠 Whisper → Text
-            with open("voice.wav", "rb") as audio_file:
-                transcription = client.audio.transcriptions.create(
-                    model="whisper-1",
-                    file=audio_file
-                )
-            incoming_text = transcription.text
-            print("🗣️ Transkribierter Text:", incoming_text)
+            return Response(str(resp), mimetype="application/xml")
 
-            # 🧹 Aufräumen
-            for file in ["voice.ogg", "voice.wav"]:
-                if os.path.exists(file):
-                    os.remove(file)
-
-        # 🧩 Wenn kein Text erkannt wurde
-        if not incoming_text:
-            reply_text = "Ich konnte nichts verstehen 🎧 – bitte sprich oder schreib noch einmal."
-        else:
-            # 💬 GPT-Antwort erzeugen
+        # 📝 Wenn Textnachricht
+        if incoming_text:
             response = client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[{"role": "user", "content": incoming_text}]
             )
             reply_text = response.choices[0].message.content.strip()
+        else:
+            reply_text = "Ich konnte nichts verstehen 🎧 – bitte sprich oder schreib noch einmal."
 
-        # 📲 Twilio-Antwort senden (wichtig für WhatsApp!)
+        # Antwort sofort senden
         resp = MessagingResponse()
         resp.message(reply_text)
         return Response(str(resp), mimetype="application/xml")
 
     except Exception as e:
-        print("💥 Allgemeiner Fehler im Webhook:", e)
+        print("💥 Allgemeiner Fehler:", e)
         resp = MessagingResponse()
-        resp.message("🚨 Unerwarteter Serverfehler. Bitte versuch es später erneut.")
+        resp.message("🚨 Ein Fehler ist aufgetreten. Bitte versuch es erneut.")
         return Response(str(resp), mimetype="application/xml")
 
 
-# --- SERVER STARTEN (lokal & Render) ---
+# --- START ---
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    print(f"🚀 Butler läuft auf Port {port} und wartet auf WhatsApp-Nachrichten ...")
-    app.run(host="0.0.0.0", port=port)
+    print("🚀 Butler läuft auf Port 5000 ...")
+    app.run(host="0.0.0.0", port=5000)
