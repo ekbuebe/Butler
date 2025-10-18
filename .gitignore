@@ -1,0 +1,4 @@
+.env
+*.ogg
+*.wav
+__pycache__/

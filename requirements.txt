@@ -1,0 +1,6 @@
+Flask
+twilio
+openai
+requests
+python-dotenv
+ffmpeg-python
