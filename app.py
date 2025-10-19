@@ -4,12 +4,21 @@ from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
 from openai import OpenAI
 from dotenv import load_dotenv
+
+# Microsoft Graph
 from integrations.ms_graph_helper import (
     get_access_token,
     get_mails,
     get_calendar,
     get_contacts,
     get_tasks
+)
+
+# Notion
+from integrations.notion_helper import (
+    get_databases,
+    get_pages_in_database,
+    create_page
 )
 
 # === ENV laden ===
@@ -21,7 +30,6 @@ app = Flask(__name__)
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 TWILIO_SID = os.getenv("TWILIO_SID")
 TWILIO_AUTH = os.getenv("TWILIO_AUTH")
-NOTION_TOKEN = os.getenv("NOTION_TOKEN")
 NOTION_DATABASE_ID = os.getenv("NOTION_DATABASE_ID")
 
 # === Hilfsfunktion für WhatsApp-Antwort ===
@@ -30,49 +38,6 @@ def _twilio_response(message: str):
     resp.message(message)
     return str(resp)
 
-# === Notion: Neue Notiz anlegen ===
-def create_notion_page(content: str):
-    url = "https://api.notion.com/v1/pages"
-    headers = {
-        "Authorization": f"Bearer {NOTION_TOKEN}",
-        "Content-Type": "application/json",
-        "Notion-Version": "2022-06-28"
-    }
-    data = {
-        "parent": {"database_id": NOTION_DATABASE_ID},
-        "properties": {
-            "Name": {"title": [{"text": {"content": content[:100]}}]}
-        },
-        "children": [
-            {"object": "block", "type": "paragraph", "paragraph": {"rich_text": [{"text": {"content": content}}]}}
-        ]
-    }
-    res = requests.post(url, headers=headers, json=data)
-    if res.status_code == 200:
-        return "✅ Notiz wurde in Notion gespeichert!"
-    else:
-        print("❌ Notion API Fehler:", res.text)
-        return "⚠️ Fehler beim Speichern in Notion."
-
-# === Notion: Letzte Notizen abrufen ===
-def get_notion_notes(limit=3):
-    url = f"https://api.notion.com/v1/databases/{NOTION_DATABASE_ID}/query"
-    headers = {
-        "Authorization": f"Bearer {NOTION_TOKEN}",
-        "Content-Type": "application/json",
-        "Notion-Version": "2022-06-28"
-    }
-    res = requests.post(url, headers=headers)
-    if res.status_code != 200:
-        print("❌ Notion Fehler:", res.text)
-        return ["Fehler beim Laden der Notizen."]
-    data = res.json().get("results", [])
-    notes = []
-    for page in data[:limit]:
-        title = page["properties"].get("Name", {}).get("title", [])
-        title_text = title[0]["text"]["content"] if title else "Ohne Titel"
-        notes.append(f"📝 {title_text}")
-    return notes or ["Keine Notizen gefunden."]
 
 # === Haupt-Webhook ===
 @app.route("/webhook", methods=["POST"])
@@ -82,14 +47,17 @@ def webhook():
         incoming_text = request.values.get("Body", "").strip()
         reply_text = ""
 
-        # 🎙️ Sprachdatei
+        # 🎙️ Sprachnachricht erkannt
         if num_media > 0:
             media_url = request.values.get("MediaUrl0")
             audio_response = requests.get(media_url, auth=(TWILIO_SID, TWILIO_AUTH))
+
             if audio_response.status_code == 200:
                 with open("voice.ogg", "wb") as f:
                     f.write(audio_response.content)
+
                 os.system('ffmpeg -y -i voice.ogg -ar 44100 -ac 2 voice.wav')
+
                 with open("voice.wav", "rb") as audio_file:
                     transcription = client.audio.transcriptions.create(
                         model="whisper-1",
@@ -98,12 +66,17 @@ def webhook():
                 incoming_text = transcription.text
                 os.remove("voice.ogg")
                 os.remove("voice.wav")
+                print("🗣️ Transkribiert:", incoming_text)
+            else:
+                return _twilio_response("❌ Fehler beim Abrufen der Sprachnachricht.")
 
+        # Kein Text erkannt?
         if not incoming_text:
             return _twilio_response("Ich konnte nichts verstehen 🎧 – bitte sprich oder schreib nochmal.")
+
         lower_text = incoming_text.lower()
 
-        # === Microsoft Graph Abfragen ===
+        # === Microsoft Graph Befehle ===
         if "mail" in lower_text or "nachricht" in lower_text:
             token = get_access_token()
             mails = get_mails(token)
@@ -124,28 +97,59 @@ def webhook():
             tasks = get_tasks(token)
             reply_text = "\n".join([f"📝 {t.get('displayName', 'Unbenannte Aufgabe')}" for t in tasks]) or "Keine Aufgaben gefunden."
 
-        # === Notion Befehle ===
-        elif "notion" in lower_text and "neue" in lower_text:
-            note_text = incoming_text.split("notion", 1)[-1].replace("neue", "").strip()
-            reply_text = create_notion_page(note_text)
+        # === 🧠 Notion Befehle ===
+        elif "notion" in lower_text:
+            # Neue Notiz
+            if "neue" in lower_text or "erstellen" in lower_text or "notiz" in lower_text:
+                note_text = incoming_text.replace("notion", "").replace("neue", "").replace("erstellen", "").strip()
+                try:
+                    create_page(NOTION_DATABASE_ID, note_text)
+                    reply_text = f"✅ Neue Notiz in Notion gespeichert:\n„{note_text}“"
+                except Exception as e:
+                    reply_text = f"❌ Fehler beim Erstellen der Notiz: {e}"
 
-        elif "notion" in lower_text and ("zeige" in lower_text or "liste" in lower_text):
-            notes = get_notion_notes()
-            reply_text = "\n".join(notes)
+            # Notizen anzeigen
+            elif "zeige" in lower_text or "liste" in lower_text or "notizen" in lower_text:
+                try:
+                    pages = get_pages_in_database(NOTION_DATABASE_ID)
+                    if not pages:
+                        reply_text = "📭 Keine Notizen gefunden."
+                    else:
+                        note_titles = []
+                        for p in pages:
+                            title = p["properties"].get("Name", {}).get("title", [])
+                            title_text = title[0]["text"]["content"] if title else "Ohne Titel"
+                            note_titles.append(f"📝 {title_text}")
+                        reply_text = "\n".join(note_titles)
+                except Exception as e:
+                    reply_text = f"❌ Fehler beim Laden der Notizen: {e}"
 
+            # Alle Datenbanken zeigen
+            elif "datenbank" in lower_text:
+                try:
+                    dbs = get_databases()
+                    reply_text = "\n".join([f"🗂️ {d['title'][0]['plain_text']}" for d in dbs if d.get('title')]) or "Keine Datenbanken gefunden."
+                except Exception as e:
+                    reply_text = f"❌ Fehler beim Abrufen der Datenbanken: {e}"
+
+            else:
+                reply_text = "🤔 Sag z. B. „Notion neue Notiz Einkaufsliste“ oder „Notion zeig meine Notizen“"
+
+        # === 💬 GPT Smalltalk ===
         else:
-            # 💬 GPT Chat
             response = client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[{"role": "user", "content": incoming_text}]
             )
             reply_text = response.choices[0].message.content.strip()
 
+        # 📲 Antwort an WhatsApp
         return _twilio_response(reply_text)
 
     except Exception as e:
         print("💥 Fehler:", e)
         return _twilio_response("🚨 Unerwarteter Fehler. Bitte versuch es später erneut.")
+
 
 # === Start ===
 if __name__ == "__main__":
