@@ -65,7 +65,7 @@ def get_calendar(token, max_results=3):
 # === 👤 Kontakte ===
 def get_contacts(token, max_results=3):
     headers = {"Authorization": f"Bearer {token}"}
-    url = f"{GRAPH_BASE}/users/me/contacts?$top={max_results}"
+    url = f"{GRAPH_BASE}/me/contacts?$top={max_results}"
     res = requests.get(url, headers=headers)
 
     if res.status_code != 200:
@@ -78,7 +78,7 @@ def get_contacts(token, max_results=3):
 # === 📝 Aufgaben ===
 def get_tasks(token):
     headers = {"Authorization": f"Bearer {token}"}
-    url = f"{GRAPH_BASE}/users/me/todo/lists"
+    url = f"{GRAPH_BASE}/me/todo/lists"
     res = requests.get(url, headers=headers)
 
     if res.status_code != 200:
@@ -91,7 +91,7 @@ def get_tasks(token):
         list_id = lst.get("id")
         name = lst.get("displayName", "Ohne Listenname")
 
-        task_url = f"{GRAPH_BASE}/users/me/todo/lists/{list_id}/tasks"
+        task_url = f"{GRAPH_BASE}/me/todo/lists/{list_id}/tasks"
         t_res = requests.get(task_url, headers=headers)
         if t_res.status_code == 200:
             tasks = t_res.json().get("value", [])
