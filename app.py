@@ -11,6 +11,11 @@ from integrations.ms_graph_helper import (
     get_contacts,
     get_tasks
 )
+from integrations.notion_helper import (
+    get_databases,
+    get_pages_in_database,
+    create_page
+)
 
 # === ENV laden ===
 load_dotenv()
@@ -101,6 +106,36 @@ def webhook():
                 reply_text = "\n".join([f"📝 {t.get('displayName', 'Unbenannte Aufgabe')}" for t in tasks]) or "Keine Aufgaben gefunden."
             except Exception as e:
                 reply_text = f"❌ Fehler beim Abrufen der Aufgaben: {e}"
+
+        # === Notion-Befehle ===
+        elif "notion" in lower_text or "notiz" in lower_text:
+            try:
+                if "erstelle" in lower_text or "neue" in lower_text:
+                    # Neue Seite anlegen
+                    databases = get_databases()
+                    if not databases:
+                        reply_text = "❌ Keine Notion-Datenbanken gefunden."
+                    else:
+                        db_id = databases[0]["id"]
+                        title = incoming_text.replace("erstelle", "").replace("neue", "").replace("in notion", "").strip()
+                        result = create_page(db_id, title or "Neue Notiz")
+                        reply_text = f"📝 Notiz '{title}' wurde in Notion erstellt!"
+                else:
+                    # Einträge abrufen
+                    databases = get_databases()
+                    if not databases:
+                        reply_text = "❌ Keine Notion-Datenbanken gefunden."
+                    else:
+                        db_id = databases[0]["id"]
+                        pages = get_pages_in_database(db_id)
+                        titles = []
+                        for p in pages:
+                            title_prop = p.get("properties", {}).get("Name", {}).get("title", [])
+                            if title_prop:
+                                titles.append(f"📄 {title_prop[0]['plain_text']}")
+                        reply_text = "\n".join(titles) or "Keine Seiten in Notion gefunden."
+            except Exception as e:
+                reply_text = f"❌ Fehler beim Zugriff auf Notion: {e}"
 
         else:
             # 💬 GPT-Antwort für Chat
