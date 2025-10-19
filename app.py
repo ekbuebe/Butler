@@ -9,7 +9,8 @@ from dotenv import load_dotenv
 from integrations.ms_graph_helper import (
     get_access_token,
     get_mails,
-    get_events,
+    get_calendar,
+    get_contacts,
     get_tasks
 )
 
@@ -25,6 +26,7 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 # Twilio Auth-Daten
 TWILIO_SID = os.getenv("TWILIO_SID")
 TWILIO_AUTH = os.getenv("TWILIO_AUTH")
+
 
 # --- HAUPT-WEBHOOK ---
 @app.route("/webhook", methods=["POST"])
@@ -91,15 +93,25 @@ def webhook():
                 try:
                     token = get_access_token()
                     mails = get_mails(token)
-                    reply_text = "\n".join(mails)
+                    if not mails:
+                        reply_text = "📭 Keine neuen E-Mails gefunden."
+                    else:
+                        reply_text = "\n\n".join(
+                            [f"✉️ {m.get('subject','(Kein Betreff)')} — von {m.get('from',{}).get('emailAddress',{}).get('address','Unbekannt')}" for m in mails]
+                        )
                 except Exception as e:
                     reply_text = f"❌ Fehler beim Abrufen der Mails: {e}"
 
             elif "kalender" in lower_text or "termin" in lower_text:
                 try:
                     token = get_access_token()
-                    events = get_events(token)
-                    reply_text = "\n".join(events)
+                    events = get_calendar(token)
+                    if not events:
+                        reply_text = "📅 Keine bevorstehenden Termine gefunden."
+                    else:
+                        reply_text = "\n\n".join(
+                            [f"📆 {e.get('subject','(Ohne Titel)')} — am {e.get('start',{}).get('dateTime','?')}" for e in events]
+                        )
                 except Exception as e:
                     reply_text = f"❌ Fehler beim Abrufen der Termine: {e}"
 
@@ -107,23 +119,21 @@ def webhook():
                 try:
                     token = get_access_token()
                     tasks = get_tasks(token)
-                    reply_text = "\n".join(tasks)
+                    if not tasks:
+                        reply_text = "✅ Keine offenen Aufgaben."
+                    else:
+                        reply_text = "\n".join([f"📝 {t.get('displayName','(Unbenannt)')}" for t in tasks])
                 except Exception as e:
                     reply_text = f"❌ Fehler beim Abrufen der Aufgaben: {e}"
 
             elif "kontakt" in lower_text or "kontakte" in lower_text:
                 try:
                     token = get_access_token()
-                    headers = {"Authorization": f"Bearer {token}"}
-                    res = requests.get(
-                        "https://graph.microsoft.com/v1.0/me/contacts?$top=5",
-                        headers=headers
-                    ).json()
-                    contacts = [
-                        f"👤 {c.get('displayName', 'Unbekannt')}"
-                        for c in res.get("value", [])
-                    ]
-                    reply_text = "\n".join(contacts) or "Keine Kontakte gefunden."
+                    contacts = get_contacts(token)
+                    if not contacts:
+                        reply_text = "📇 Keine gespeicherten Kontakte gefunden."
+                    else:
+                        reply_text = "\n".join([f"👤 {c.get('displayName','Unbekannt')}" for c in contacts])
                 except Exception as e:
                     reply_text = f"❌ Fehler beim Abrufen der Kontakte: {e}"
 
@@ -153,5 +163,5 @@ def webhook():
 
 # --- START ---
 if __name__ == "__main__":
-    print("🚀 Butler läuft auf Port 5000 ...")
+    print("🚀 Butler läuft ...")
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
