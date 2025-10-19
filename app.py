@@ -5,6 +5,14 @@ from twilio.twiml.messaging_response import MessagingResponse
 from openai import OpenAI
 from dotenv import load_dotenv
 
+# Microsoft Graph-Integration
+from integrations.ms_graph_helper import (
+    get_access_token,
+    get_mails,
+    get_events,
+    get_tasks
+)
+
 # --- ENV-VARIABLEN LADEN ---
 load_dotenv()
 
@@ -32,7 +40,7 @@ def webhook():
             content_type = request.values.get("MediaContentType0", "")
             print(f"🎙️ Sprachdatei empfangen: {media_url} ({content_type})")
 
-            # Sprachdatei mit Twilio-Auth herunterladen
+            # Sprachdatei herunterladen
             audio_response = requests.get(media_url, auth=(TWILIO_SID, TWILIO_AUTH))
             if audio_response.status_code == 200:
                 with open("voice.ogg", "wb") as f:
@@ -44,7 +52,7 @@ def webhook():
                 resp.message("Fehler beim Abrufen der Sprachnachricht 😕")
                 return str(resp)
 
-            # 🔊 In WAV konvertieren (Whisper bevorzugt .wav)
+            # 🔊 Konvertieren in WAV
             conversion_result = os.system('ffmpeg -y -i voice.ogg -ar 44100 -ac 2 voice.wav')
             if conversion_result != 0 or not os.path.exists("voice.wav"):
                 print("❌ Fehler bei der ffmpeg-Konvertierung.")
@@ -75,18 +83,63 @@ def webhook():
         if not incoming_text:
             reply_text = "Ich konnte nichts verstehen 🎧 – bitte sprich oder schreib nochmal."
         else:
-            try:
-                # 💬 GPT-Antwort
-                response = client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[{"role": "user", "content": incoming_text}]
-                )
-                reply_text = response.choices[0].message.content.strip()
-            except Exception as e:
-                print("❌ GPT-Fehler:", e)
-                reply_text = "😕 Es ist ein unerwarteter Fehler aufgetreten."
+            lower_text = incoming_text.lower()
+            token = None
 
-        # 📲 Antwort an WhatsApp zurücksenden
+            # 💼 Microsoft Graph-Kommandos
+            if "mail" in lower_text or "nachricht" in lower_text:
+                try:
+                    token = get_access_token()
+                    mails = get_mails(token)
+                    reply_text = "\n".join(mails)
+                except Exception as e:
+                    reply_text = f"❌ Fehler beim Abrufen der Mails: {e}"
+
+            elif "kalender" in lower_text or "termin" in lower_text:
+                try:
+                    token = get_access_token()
+                    events = get_events(token)
+                    reply_text = "\n".join(events)
+                except Exception as e:
+                    reply_text = f"❌ Fehler beim Abrufen der Termine: {e}"
+
+            elif "aufgabe" in lower_text or "to-do" in lower_text:
+                try:
+                    token = get_access_token()
+                    tasks = get_tasks(token)
+                    reply_text = "\n".join(tasks)
+                except Exception as e:
+                    reply_text = f"❌ Fehler beim Abrufen der Aufgaben: {e}"
+
+            elif "kontakt" in lower_text or "kontakte" in lower_text:
+                try:
+                    token = get_access_token()
+                    headers = {"Authorization": f"Bearer {token}"}
+                    res = requests.get(
+                        "https://graph.microsoft.com/v1.0/me/contacts?$top=5",
+                        headers=headers
+                    ).json()
+                    contacts = [
+                        f"👤 {c.get('displayName', 'Unbekannt')}"
+                        for c in res.get("value", [])
+                    ]
+                    reply_text = "\n".join(contacts) or "Keine Kontakte gefunden."
+                except Exception as e:
+                    reply_text = f"❌ Fehler beim Abrufen der Kontakte: {e}"
+
+            else:
+                # 💬 GPT-Antwort für normale Chats
+                try:
+                    response = client.chat.completions.create(
+                        model="gpt-4o-mini",
+                        messages=[{"role": "user", "content": incoming_text}]
+                    )
+                    reply_text = response.choices[0].message.content.strip()
+                except Exception as e:
+                    print("❌ GPT-Fehler:", e)
+                    reply_text = "😕 Es ist ein unerwarteter Fehler aufgetreten."
+
+        # 📲 Antwort an WhatsApp senden
         resp = MessagingResponse()
         resp.message(reply_text)
         return str(resp)

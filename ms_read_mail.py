@@ -9,7 +9,7 @@ load_dotenv()
 CLIENT_ID = os.getenv("MS_CLIENT_ID")
 TENANT_ID = os.getenv("MS_TENANT_ID")
 AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
-SCOPES = ["https://graph.microsoft.com/.default", "https://graph.microsoft.com/Mail.Read"]
+SCOPES = ["User.Read", "Mail.Read"]
 
 def get_access_token():
     app = PublicClientApplication(CLIENT_ID, authority=AUTHORITY)

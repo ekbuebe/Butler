@@ -1,4 +1,4 @@
-# Python & Flask
+# --- Python & Flask ---
 __pycache__/
 *.pyc
 *.pyo
@@ -6,14 +6,30 @@ __pycache__/
 *.db
 instance/
 .env
+venv/
+.env.bak
+*.log
 
-# Audio-Dateien
+# --- Audio-Dateien (Voice Inputs) ---
 *.ogg
 *.wav
+*.mp3
+*.m4a
 
-# Tools
-ngrok.exe
+# --- Microsoft / API Tokens ---
+token.json
+msal_cache.bin
+msal_token_cache.json
 
-# System Files
+# --- Editor & OS ---
 .DS_Store
 Thumbs.db
+*.swp
+*.swo
+
+# --- Tools & Binaries ---
+ngrok.exe
+ffmpeg.exe
+
+# --- Deployment ---
+render.yaml
