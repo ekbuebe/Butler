@@ -18,29 +18,21 @@ GRAPH_BASE = "https://graph.microsoft.com/v1.0"
 # === Token Cache ===
 _token_cache = None
 
-
 def get_access_token():
-    """
-    Holt ein App-Token über Client Credentials Flow (ohne User Login).
-    Perfekt für Server (Render, etc.).
-    """
-    global _token_cache
-    if _token_cache:
-        return _token_cache
-
     data = {
         "client_id": CLIENT_ID,
-        "client_secret": CLIENT_SECRET,
-        "grant_type": "client_credentials",
         "scope": "https://graph.microsoft.com/.default",
+        "client_secret": os.getenv("MS_CLIENT_SECRET"),
+        "grant_type": "client_credentials"
     }
 
-    res = requests.post(TOKEN_URL, data=data)
+    res = requests.post(f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token", data=data)
+
     if res.status_code != 200:
-        raise Exception(f"❌ Token-Fehler: {res.text}")
+        print("❌ Token-Fehler:", res.text)
+        raise Exception(res.text)
 
     token = res.json().get("access_token")
-    _token_cache = token
     return token
 
 
