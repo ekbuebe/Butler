@@ -1,123 +1,109 @@
+# integrations/ms_graph_helper.py
+
 import os
-import json
 import requests
-from msal import PublicClientApplication
 from dotenv import load_dotenv
 
-# 🔐 ENV laden (.env enthält MS_CLIENT_ID und MS_TENANT_ID)
 load_dotenv()
 
+# === Microsoft App-Konfiguration ===
 CLIENT_ID = os.getenv("MS_CLIENT_ID")
-TENANT_ID = os.getenv("MS_TENANT_ID", "common")
+CLIENT_SECRET = os.getenv("MS_CLIENT_SECRET")
+TENANT_ID = os.getenv("MS_TENANT_ID")
+
 AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
-
-# ⚙️ Scopes – Zugriff auf Mail, Kalender, Kontakte, Aufgaben & Benutzerprofil
-SCOPES = [
-    "User.Read",
-    "Mail.Read",
-    "Calendars.Read",
-    "Contacts.Read",
-    "Tasks.ReadWrite"
-]
-
-CACHE_FILE = "token_cache.json"
+TOKEN_URL = f"{AUTHORITY}/oauth2/v2.0/token"
+GRAPH_BASE = "https://graph.microsoft.com/v1.0"
 
 # === Token Cache ===
-def load_cache():
-    if os.path.exists(CACHE_FILE):
-        try:
-            with open(CACHE_FILE, "r") as f:
-                return json.load(f)
-        except Exception:
-            return {}
-    return {}
+_token_cache = None
 
-def save_cache(data):
-    with open(CACHE_FILE, "w") as f:
-        json.dump(data, f)
 
-# === Access Token ===
 def get_access_token():
-    app = PublicClientApplication(CLIENT_ID, authority=AUTHORITY)
-    cache = load_cache()
-    accounts = app.get_accounts()
+    """
+    Holt ein App-Token über Client Credentials Flow (ohne User Login).
+    Perfekt für Server (Render, etc.).
+    """
+    global _token_cache
+    if _token_cache:
+        return _token_cache
 
-    # Falls Token im Cache vorhanden → direkt verwenden
-    if cache.get("token"):
-        return cache["token"]
+    data = {
+        "client_id": CLIENT_ID,
+        "client_secret": CLIENT_SECRET,
+        "grant_type": "client_credentials",
+        "scope": "https://graph.microsoft.com/.default",
+    }
 
-    # Andernfalls Geräte-Flow starten
-    flow = app.initiate_device_flow(scopes=SCOPES)
-    if "user_code" not in flow:
-        raise Exception("❌ Geräte-Flow konnte nicht gestartet werden.")
-    print("\n👉 Öffne die Seite https://microsoft.com/devicelogin und gib den Code ein:")
-    print(f"🔑 Code: {flow['user_code']}\n")
-
-    result = app.acquire_token_by_device_flow(flow)
-    if "access_token" in result:
-        save_cache({"token": result["access_token"]})
-        print("✅ Zugriffstoken gespeichert.")
-        return result["access_token"]
-    else:
-        raise Exception(result.get("error_description", "Fehler beim Abrufen des Tokens"))
-
-# === Outlook Mails ===
-def get_mails(token, max_results=5):
-    headers = {"Authorization": f"Bearer {token}"}
-    url = f"https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages?$top={max_results}&$orderby=receivedDateTime desc"
-    res = requests.get(url, headers=headers)
+    res = requests.post(TOKEN_URL, data=data)
     if res.status_code != 200:
-        return [f"❌ Fehler beim Abrufen der Mails: {res.text}"]
+        raise Exception(f"❌ Token-Fehler: {res.text}")
+
+    token = res.json().get("access_token")
+    _token_cache = token
+    return token
+
+
+# === 📧 E-Mails abrufen ===
+def get_mails(token, max_results=3):
+    headers = {"Authorization": f"Bearer {token}"}
+    url = f"{GRAPH_BASE}/users/me/messages?$top={max_results}"
+    res = requests.get(url, headers=headers)
+
+    if res.status_code != 200:
+        raise Exception(f"Fehler beim Abrufen der Mails: {res.text}")
+
     mails = res.json().get("value", [])
-    return [
-        f"📧 {m.get('subject', 'Kein Betreff')} — {m.get('from', {}).get('emailAddress', {}).get('address', 'Unbekannt')}"
-        for m in mails
-    ] or ["Keine Mails gefunden."]
+    return [f"📧 {m.get('subject', 'Ohne Betreff')}" for m in mails]
 
-# === Kalender ===
-def get_calendar(token, max_results=5):
+
+# === 📅 Kalender ===
+def get_calendar(token, max_results=3):
     headers = {"Authorization": f"Bearer {token}"}
-    url = f"https://graph.microsoft.com/v1.0/me/events?$top={max_results}&$orderby=start/dateTime desc"
+    url = f"{GRAPH_BASE}/users/me/events?$top={max_results}"
     res = requests.get(url, headers=headers)
+
     if res.status_code != 200:
-        return [f"❌ Fehler beim Abrufen der Termine: {res.text}"]
+        raise Exception(f"Fehler beim Abrufen des Kalenders: {res.text}")
+
     events = res.json().get("value", [])
-    return [
-        f"📅 {e.get('subject', 'Kein Titel')} — {e.get('start', {}).get('dateTime', 'Kein Datum')}"
-        for e in events
-    ] or ["Keine Termine gefunden."]
+    return [f"📅 {e.get('subject', 'Ohne Titel')}" for e in events]
 
-# === Kontakte ===
-def get_contacts(token, max_results=5):
+
+# === 👤 Kontakte ===
+def get_contacts(token, max_results=3):
     headers = {"Authorization": f"Bearer {token}"}
-    url = f"https://graph.microsoft.com/v1.0/me/contacts?$top={max_results}"
+    url = f"{GRAPH_BASE}/users/me/contacts?$top={max_results}"
     res = requests.get(url, headers=headers)
-    if res.status_code != 200:
-        return [f"❌ Fehler beim Abrufen der Kontakte: {res.text}"]
-    contacts = res.json().get("value", [])
-    return [
-        f"👤 {c.get('displayName', 'Unbekannt')} ({c.get('emailAddresses', [{}])[0].get('address', '-')})"
-        for c in contacts
-    ] or ["Keine Kontakte gefunden."]
 
-# === Aufgaben (Microsoft To Do) ===
-def get_tasks(token, max_results=5):
-    headers = {"Authorization": f"Bearer {token}"}
-    lists_url = "https://graph.microsoft.com/v1.0/me/todo/lists"
-    res = requests.get(lists_url, headers=headers)
     if res.status_code != 200:
-        return [f"❌ Fehler beim Abrufen der Aufgabenlisten: {res.text}"]
+        raise Exception(f"Fehler beim Abrufen der Kontakte: {res.text}")
+
+    contacts = res.json().get("value", [])
+    return [f"👤 {c.get('displayName', 'Unbekannt')}" for c in contacts]
+
+
+# === 📝 Aufgaben ===
+def get_tasks(token):
+    headers = {"Authorization": f"Bearer {token}"}
+    url = f"{GRAPH_BASE}/users/me/todo/lists"
+    res = requests.get(url, headers=headers)
+
+    if res.status_code != 200:
+        raise Exception(f"Fehler beim Abrufen der Aufgaben: {res.text}")
+
     lists = res.json().get("value", [])
-    if not lists:
-        return ["Keine Aufgabenlisten gefunden."]
-    
-    list_id = lists[0]["id"]
-    tasks_url = f"https://graph.microsoft.com/v1.0/me/todo/lists/{list_id}/tasks?$top={max_results}"
-    tasks_res = requests.get(tasks_url, headers=headers)
-    if tasks_res.status_code != 200:
-        return [f"❌ Fehler beim Abrufen der Aufgaben: {tasks_res.text}"]
-    tasks = tasks_res.json().get("value", [])
-    return [
-        f"📝 {t.get('title', 'Unbenannte Aufgabe')}"
-        for t in tasks
-    ] or ["Keine Aufgaben gefunden."]
+    all_tasks = []
+
+    for lst in lists:
+        list_id = lst.get("id")
+        name = lst.get("displayName", "Ohne Listenname")
+
+        task_url = f"{GRAPH_BASE}/users/me/todo/lists/{list_id}/tasks"
+        t_res = requests.get(task_url, headers=headers)
+        if t_res.status_code == 200:
+            tasks = t_res.json().get("value", [])
+            for t in tasks:
+                all_tasks.append(f"📝 {name}: {t.get('title', 'Ohne Titel')}")
+
+    return all_tasks or ["Keine Aufgaben gefunden."]
