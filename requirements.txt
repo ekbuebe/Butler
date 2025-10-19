@@ -1,7 +1,10 @@
-Flask
-twilio
-openai
+flask
 requests
+twilio
 python-dotenv
+openai
 ffmpeg-python
 gunicorn
+msal
+aiohttp
+aiohttp-retry
